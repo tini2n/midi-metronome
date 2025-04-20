@@ -8,7 +8,6 @@ Minimal, hardware‑synced metronome / bar counter for live electronic musicians
 | Beat / Bar / 16th counters | ✅ |
 | BPM auto‑detect with smoothing | ✅ |
 | 4‑bar phrase wrap | ✅ (configurable) |
-| Planned: Rotary menu, OLED UI, MIDI THRU | 🔜 |
 
 ## Wiring
 
@@ -19,7 +18,7 @@ Shield 3V3, GND shared
 ## Build / Flash
 
 ```bash
-git clone https://github.com/<you>/esp32-midi-metronome.git
+git clone https://github.com/tini2n/midi-metronome.git
 cd esp32-midi-metronome
 pio run -t upload -e esp32dev        # requires PlatformIO
 pio device monitor -b 115200
