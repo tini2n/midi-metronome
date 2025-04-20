@@ -23,8 +23,10 @@ constexpr uint16_t CLOCKS_PER_BAR = PPQN * BEATS_PER_BAR; // 96
 
 // allowed phrase lengths we will step through
 const uint8_t phraseTable[] = {1, 2, 4, 8, 16, 32};
+const uint8_t tableSize = sizeof(phraseTable) / sizeof(phraseTable[0]);
 volatile uint8_t barsPerPhrase = 4; // start with 4 (changes by encoder)
-volatile int8_t encSteps = 0;       // ISR → main‑loop mailbox
+volatile uint8_t lastAB = 0;          // prev 2‑bit A|B
+volatile int8_t  encSteps = 0;      // detent steps seen
 volatile bool swPressed = false;
 
 HardwareSerial MidiHW(2);
@@ -93,7 +95,6 @@ void onClock()
   updateCounters();
 
   // Only print once per beat (every 24 clocks) to keep log readable
-  // if (st.clock % CLOCKS_PER_BEAT == 0)
   if (st.clock % CLOCKS_PER_QN == 0)
     printStatus("Clock");
 }
@@ -114,20 +115,12 @@ void onContinue()
   st.running = true;
   Serial.println("\n--- CONT  ---");
 }
-
 void onNoteOn(byte ch, byte note, byte vel)
 {
   Serial.printf("Note| On ch:%d  %3d  vel:%3d\n", ch, note, vel);
 }
 
 // ——— Rotary encoder ISR ——————
-
-void IRAM_ATTR isrEncA() // fires on A rising edge
-{
-  bool b = digitalRead(ENC_PIN_B);
-  encSteps += b ? +1 : -1; // CW = +1, CCW = ‑1
-}
-
 void IRAM_ATTR isrEncSw()
 {
   static uint32_t last = 0; // debounce 5 ms
@@ -137,6 +130,29 @@ void IRAM_ATTR isrEncSw()
     swPressed = true;
 
   last = now;
+}
+
+void IRAM_ATTR isrEncChange()         // ONE ISR handles A and B
+{
+  static uint8_t lastAB = 0b11; // Start with both high (rest state)
+  uint8_t ab = (digitalRead(ENC_PIN_A) << 1) | digitalRead(ENC_PIN_B);
+  
+  // Only update when state changes
+  if (ab != lastAB) {
+    // Calculate transition using previous and current state
+    uint8_t transition = (lastAB << 2) | ab;
+    
+    switch (transition) {
+      case 0b0001: // 00 -> 01 (CCW)
+        encSteps--;
+        break;
+        
+      case 0b0010: // 00 -> 10 (CW)
+        encSteps++;
+        break;
+    }
+    lastAB = ab; // Save current state
+  }
 }
 
 void setup()
@@ -157,7 +173,8 @@ void setup()
   pinMode(ENC_PIN_B, INPUT_PULLUP);
   pinMode(ENC_SW_PIN, INPUT_PULLUP);
 
-  attachInterrupt(ENC_PIN_A, isrEncA, RISING);
+  attachInterrupt(ENC_PIN_A, isrEncChange, CHANGE);
+  attachInterrupt(ENC_PIN_B, isrEncChange, CHANGE);
   attachInterrupt(ENC_SW_PIN, isrEncSw, FALLING); // active‑low push
 
   Serial.println("🟢 MIDI‑Metronome ready");
@@ -169,13 +186,12 @@ void loop()
 
   if (encSteps != 0)
   {
-    int8_t delta = encSteps;
+    int8_t diff = encSteps;
     encSteps = 0;
     // find current index in phraseTable
     int idx = 0;
-    while (phraseTable[idx] != barsPerPhrase && idx < 5)
-      idx++;
-    idx = constrain(idx + delta, 0, 5);
+    while (idx < tableSize && phraseTable[idx] != barsPerPhrase) idx++;
+    idx = constrain(idx + diff, 0, tableSize - 1);
     barsPerPhrase = phraseTable[idx];
     Serial.printf(">>> phrase len = %u bars\n", barsPerPhrase);
   }
