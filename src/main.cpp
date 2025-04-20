@@ -6,6 +6,7 @@ constexpr uint8_t MIDI_TX_PIN = 17;                       // keep free for futur
 constexpr uint8_t PPQN = 24;                              // MIDI spec (don't change). 24 clocks per quarter note
 constexpr uint8_t BEATS_PER_BAR = 4;                      // time‑signature top number
 constexpr uint8_t QTR_PER_BEAT = 4;                       // 4 QN per beat (4/4 time)
+constexpr uint8_t BARS_PER_PHRASE = 4;                    // 4 bars per phrase
 constexpr uint8_t CLOCKS_PER_QN = PPQN / QTR_PER_BEAT;    // 6
 constexpr uint8_t CLOCKS_PER_BEAT = PPQN;                 // 24
 constexpr uint16_t CLOCKS_PER_BAR = PPQN * BEATS_PER_BAR; // 96
@@ -15,13 +16,15 @@ MIDI_CREATE_INSTANCE(HardwareSerial, MidiHW, MIDI);
 
 struct ClockState
 {
-  uint32_t clockCount = 0;      // clocks since last Start
-  uint32_t lastClockMicros = 0; // for BPM calc
+  uint32_t clock = 0; // clocks since last Start
   float bpm = 0.0f;
+
   // Derived counters (updated every beat/bar/qtr)
   uint32_t beat = 0; // 0‑based
   uint32_t bar = 0;  // 0‑based
   uint8_t qtr = 0;   // 0..3   (16th‑note within the beat)
+
+  bool running = false; // true if Start received
 };
 
 ClockState st;
@@ -30,58 +33,70 @@ void resetCounters() { st = {}; }
 
 // -------------------------------------------------------
 // Helper: recompute BPM once per clock tick
-void updateBpm()
+void updateBpm(uint32_t dtMicros)
 {
-  static uint32_t prev = 0;
-  uint32_t now = micros();
-  uint32_t diff = now - prev;
-  prev = now;
+  // dtMicros = µs per clock; 1 QN = 24 clocks
+  if (dtMicros == 0)
+    return;
+  float instBpm = 60.0e6f / (dtMicros * PPQN);
 
-  if (diff > 1000)
-  {                                               // ignore <500 kHz noise
-    float qn_us = diff * PPQN;                    // µs for 1 quarter note
-    st.bpm = (qn_us > 0) ? (60.0e6f / qn_us) : 0; // 60 s / (µs / 1e6)
-  }
+  // simple low‑pass: keep 90 % old, 10 % new
+  st.bpm = st.bpm * 0.90f + instBpm * 0.10f;
 }
 
 // Helper: update beat / bar counters every clock
 void updateCounters()
 {
-  ++st.clockCount;
+  ++st.clock;
 
-  // Quantise to grids
-  st.qtr = (st.clockCount % CLOCKS_PER_BEAT) / CLOCKS_PER_QN;
-  st.beat = (st.clockCount / CLOCKS_PER_BEAT) % BEATS_PER_BAR;
-  st.bar = st.clockCount / CLOCKS_PER_BAR;
+  st.qtr = (st.clock / CLOCKS_PER_QN) % QTR_PER_BEAT;
+  st.beat = (st.clock / CLOCKS_PER_BEAT) % BEATS_PER_BAR;
+  st.bar = (st.clock / CLOCKS_PER_BAR) % BARS_PER_PHRASE;
 }
 
-// Nicely formatted status line
 void printStatus(const char *tag)
 {
-  Serial.printf(
-      "%4lu|%2u|%2u CLK:%7lu BPM:%6.1f\n",
-      st.bar + 1, // convert to 1‑based for display
-      st.beat + 1,
-      st.qtr + 1,
-      st.clockCount,
-      st.bpm);
+  Serial.printf("[%u:%u:%u]   |CLK:%lu|BPM:%5.1f|\n",
+                st.bar, st.beat, st.qtr, st.clock, st.bpm);
 }
 
 // -------------------------------------------------------
 // MIDI callbacks
 void onClock()
 {
-  updateBpm();
+  static uint32_t lastMicros = 0;
+  uint32_t now = micros();
+  uint32_t dt = now - lastMicros;
+  lastMicros = now;
+
+  if (!st.running)
+    return; // ignore stray clocks while stopped
+
+  updateBpm(dt);
   updateCounters();
 
   // Only print once per beat (every 24 clocks) to keep log readable
-  if (st.clockCount % CLOCKS_PER_BEAT == 0)
+  // if (st.clock % CLOCKS_PER_BEAT == 0)
+  if (st.clock % CLOCKS_PER_QN == 0)
     printStatus("Clock");
 }
 
-void onStart() { resetCounters(); Serial.println("\n--- START ---"); }
-void onStop () { Serial.println("\n--- STOP  ---"); }
-void onCont () { Serial.println("\n--- CONT  ---"); }
+void onStart()
+{
+  resetCounters();
+  st.running = true;
+  Serial.println("\n--- START ---");
+}
+void onStop()
+{
+  st.running = false;
+  Serial.println("\n--- STOP  ---");
+}
+void onContinue()
+{
+  st.running = true;
+  Serial.println("\n--- CONT  ---");
+}
 
 void onNoteOn(byte ch, byte note, byte vel)
 {
@@ -99,15 +114,14 @@ void setup()
   MIDI.setHandleClock(onClock);
   MIDI.setHandleStart(onStart);
   MIDI.setHandleStop(onStop);
-  MIDI.setHandleContinue(onCont);
-  // MIDI.setHandleNoteOn(onNoteOn);
+  MIDI.setHandleContinue(onContinue);
+  // MIDI.setHandleNoteOn(onNoteOn); // for debugging
   MIDI.begin(MIDI_CHANNEL_OMNI);
 
-  Serial.println("🟢  MIDI‑Metronome ready");
+  Serial.println("🟢 MIDI‑Metronome ready");
 }
 
 void loop()
 {
-  MIDI.read(); // polling handler (fast enough on ESP32)
-  // You can add display refresh or LED blink code here every few ms.
+  MIDI.read();
 }
