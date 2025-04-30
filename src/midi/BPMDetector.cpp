@@ -1,5 +1,5 @@
 #include "BPMDetector.h"
-#include "Constants.h"
+#include "core/Constants.h"
 #include <algorithm>
 
 void BPMDetector::onClock(uint32_t dt)
@@ -12,5 +12,5 @@ void BPMDetector::onClock(uint32_t dt)
   for (auto v : _buf)
     sum += v;
   uint32_t avg = sum / 8;
-  _bpmInt = (uint16_t)((60000000ULL + avg/2) / avg);
+  _bpmInt = (uint16_t)((60000000ULL + avg / 2) / avg);
 }

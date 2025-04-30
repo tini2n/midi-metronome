@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
-#include "EventBus.h"
+#include "core/EventBus.h"
+#include "midi/MidiOut.h"
 
 class MidiClock
 {
@@ -11,4 +12,5 @@ public:
 private:
     static void IRAM_ATTR isrByte();
     static inline volatile bool _tickFlag = false;
+    static MidiOut* _thru;
 };
